@@ -6,6 +6,9 @@ import os
 import mimetypes
 
 from bs4 import BeautifulSoup
+from pathlib import Path
+from random import seed
+from random import randint
 
 parser = argparse.ArgumentParser(description='Import Guru collections to Atlassian Confluence.')
 parser.add_argument('--collection-dir', dest='collectiondir',
@@ -18,7 +21,7 @@ parser.add_argument('--parent', dest='parent', help='the parent page for the imp
 
 args = parser.parse_args()
 print(args)
-
+seed(1) # insecure
 class ConfluencePage:
     name_cache = {'root': 1}
     def __init__(self, title, page_id="", parent_id="", html_content=""):
@@ -57,7 +60,6 @@ class ConfluencePage:
         else:
             self.title = title_candidate
             ConfluencePage.name_cache.update({title_candidate: 1})
-
     def replace_img_with_confluence_image(self):
         soup = BeautifulSoup(self.htmlContent, 'html.parser')
         for img in soup.findAll('img'):
@@ -108,7 +110,12 @@ def create_confluence_page(organization, space, parent, user_name, user_credenti
     headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
     session = requests.Session()
     session.auth = (user_name, user_credentials)
-    response = session.post(url, data=json.dumps(data), headers=headers).json()
+    raw_response = session.post(url, data=json.dumps(data), headers=headers)
+    if not raw_response.ok:
+        print("ERROR from API create request: "+str(raw_response.status_code))
+        print("ERROR data: "+str(data))
+        print("ERROR response: "+str(raw_response.text))
+    response = raw_response.json()
     return response
 
 def update_confluence_page(organization, space, page_id, user_name, user_credentials, title, content, version=2):
@@ -134,7 +141,12 @@ def update_confluence_page(organization, space, page_id, user_name, user_credent
     headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
     session = requests.Session()
     session.auth = (user_name, user_credentials)
-    response = session.put(url, data=json.dumps(data), headers=headers).json()
+    raw_response = session.put(url, data=json.dumps(data), headers=headers)
+    if not raw_response.ok:
+        print("ERROR from API update request: "+str(raw_response.status_code))
+        print("ERROR data: "+str(data))
+        print("ERROR response: "+str(raw_response.text))
+    response = raw_response.json()
     return response
 
 def upload_attachment_for_confluence_page(organization, page_id, user_name, user_credentials, file_name, resource_dir):
@@ -144,14 +156,23 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
     session.auth = (user_name, user_credentials)
     response = None
     file_path = resource_dir+"/"+file_name
+
+    if not Path(file_path).is_file():
+        return None
+
     with open(file_path, "rb") as f:
         try:
             content_type, encoding = mimetypes.guess_type(file_path)
             if content_type is None:
                 content_type = 'multipart/form-data'
             file_data = {'file': (file_name, f, content_type)}
-            response = session.post(url, files=file_data, headers=headers).json()
+            raw_response = session.post(url, files=file_data, headers=headers)
+            if not raw_response.ok:
+                print("ERROR from API upload request: "+str(raw_response.status_code))
+            response = raw_response.json()
         except yaml.YAMLError as e:
+            print(e)
+        except FileNotFoundError as e:
             print(e)
 
     return response
@@ -164,14 +185,28 @@ def fill_board(confluence_node, board_id, boards_path):
         except yaml.YAMLError as e:
             print(e)
 
+    if not 'Items' in content:
+        print("WARNING no items found for: boardId="+board_id+", boardPath="+boards_path)
+        return
+
     for item in content['Items']:
         # print(item)
         if item['Type'] == 'card':
             card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>")
             confluence_node.add_child(card)
             fill_card(card, item['ID'], boards_path+"../cards/")
+        elif item['Type'] == 'section':
+            section = ConfluencePage(item['Title'], "not created yet", confluence_node.id, "<h2>placeholder</h2>")
+            confluence_node.add_child(section)
+            if not 'Items' in item:
+                print("WARNING no items found for section: boardId="+board_id+", boardPath="+boards_path)
+                return
+            for subitem in item['Items']:
+                card = ConfluencePage("not yet available", "not created yet", section.id, "<h2>placeholder</h2>")
+                section.add_child(card)
+                fill_card(card, subitem['ID'], boards_path+"../cards/")
         else:
-            print("ERROR type for: "+item)
+            print("ERROR not a CARD/SECTION type: boardId="+board_id+", boardPath="+boards_path+", item="+str(item))
 
 def fill_card(confluence_node, card_id, cards_path):
     definition = None
@@ -194,7 +229,9 @@ def fill_card(confluence_node, card_id, cards_path):
 def create_node(confluence_node, organization, space, user_name, user_credentials, collections_dir):
     create_op = create_confluence_page(organization, space, confluence_node.parentId, user_name, user_credentials,
                            confluence_node.title, confluence_node.htmlContent)
-    print(create_op)
+    if not 'id' in create_op:
+        create_op = create_confluence_page(organization, space, confluence_node.parentId, user_name, user_credentials,
+                                           confluence_node.title+" (conflict "+str(randint(111, 222))+")", confluence_node.htmlContent)
     new_page_id = create_op['id']
     confluence_node.set_id(new_page_id)
     print("CREATED "+new_page_id)
@@ -204,10 +241,19 @@ def create_node(confluence_node, organization, space, user_name, user_credential
         upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image, collections_dir+"/resources/")
     # update content with image links
     confluence_node.replace_img_with_confluence_image()
-    update_op = update_confluence_page(organization, space, new_page_id, user_name, user_credentials,
-                           confluence_node.title, confluence_node.htmlContent)
-    update_page_id = update_op['id']
-    print("UPDATED "+update_page_id)
+    if len(confluence_node.images) > 0:
+        update_op = update_confluence_page(organization, space, new_page_id, user_name, user_credentials,
+                               confluence_node.title, confluence_node.htmlContent)
+        if not 'id' in update_op:
+            update_op = update_confluence_page(organization, space, new_page_id, user_name, user_credentials,
+                                               confluence_node.title, confluence_node.htmlContent)
+        if 'id' in update_op:
+            update_page_id = update_op['id']
+            print("UPDATED "+update_page_id)
+        else:
+            print("UPDATED FAILED"+new_page_id)
+    else:
+        print("UPDATED not needed")
     # continue in children
     if len(confluence_node.children) > 0:
         for page in confluence_node.children:
@@ -236,4 +282,4 @@ for item in content['Items']:
         fill_card(card, item['ID'], args.collectiondir+"/cards/")
 
 for page in rootNode.children:
-    create_node(page, args.org, args.spacekey, args.username, apikey, args.collectiondir)
+    create_node(page, args.org, args.spacekey, args.username, args.apikey, args.collectiondir)
