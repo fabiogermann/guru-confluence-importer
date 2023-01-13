@@ -9,7 +9,7 @@ Currently tested with:
 ## Usage
 
 ```
-python3 guruCollectionToHTML.py \
+python3 guruCollectionToConfluence.py \
   --collection-dir ../export-20221201010000-/ \
   --user <user@org.com> \
   --api-key <apikey>
