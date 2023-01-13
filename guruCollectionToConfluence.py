@@ -190,7 +190,6 @@ def fill_board(confluence_node, board_id, boards_path):
         return
 
     for item in content['Items']:
-        # print(item)
         if item['Type'] == 'card':
             card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>")
             confluence_node.add_child(card)
@@ -207,6 +206,26 @@ def fill_board(confluence_node, board_id, boards_path):
                 fill_card(card, subitem['ID'], boards_path+"../cards/")
         else:
             print("ERROR not a CARD/SECTION type: boardId="+board_id+", boardPath="+boards_path+", item="+str(item))
+
+def fill_board_group(confluence_node, board_group_id, board_group_path):
+    content = None
+    with open(board_group_path+"/"+board_group_id+".yaml", "r") as f:
+        try:
+            content = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            print(e)
+
+    if not 'Boards' in content:
+        print("WARNING no items found for: boardGroupId="+board_group_id+", boardGroupPath="+board_group_path)
+        return
+
+    counter = 1
+    for itemID in content['Boards']:
+        board = ConfluencePage(content['Title']+"("+str(counter)+")", "-1", confluence_node.id, "<h2>"+item['Title']+"</h2>")
+        confluence_node.add_child(board)
+        fill_board(board, itemID, board_group_path+"/../boards/")
+        counter = counter+1
+
 
 def fill_card(confluence_node, card_id, cards_path):
     definition = None
@@ -272,6 +291,10 @@ with open(args.collectiondir+"/collection.yaml", "r") as f:
         print(e)
 
 for item in content['Items']:
+    if item['Type'] == 'boardgroup':
+        boardgroup = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>"+item['Title']+"</h2>")
+        rootNode.add_child(boardgroup)
+        fill_board_group(boardgroup, item['ID'], args.collectiondir+"/board-groups/")
     if item['Type'] == 'board':
         board = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>"+item['Title']+"</h2>")
         rootNode.add_child(board)
