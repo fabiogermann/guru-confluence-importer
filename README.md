@@ -33,3 +33,5 @@ python3 guruCollectionToConfluence.py \
 ![Screenshot 2022-12-07 at 13 55 53](https://user-images.githubusercontent.com/2370607/206271427-02cbbf6f-7399-408e-b188-b84e5b4adf71.png)
 ![Screenshot 2022-12-07 at 13 56 29](https://user-images.githubusercontent.com/2370607/206271447-9dcd8f94-7ee7-4268-a006-c496ada6c24b.png)
 
+## References
+[Atlassian Forum Mention 1](https://community.atlassian.com/t5/Confluence-questions/How-to-import-from-guru-cards-to-confluence-pages/qaq-p/2031581#M285446)
