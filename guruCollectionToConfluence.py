@@ -27,13 +27,14 @@ seed(1)  # insecure
 class ConfluencePage:
     name_cache = {'root': 1}
 
-    def __init__(self, title, page_id="", parent_id="", html_content=""):
+    def __init__(self, title, page_id="", parent_id="", html_content="", uuid=""):
         self.parentId = parent_id
         self.id = page_id
-        self.htmlContent = html_content
-        self.title = title.encode("ascii", "ignore").decode()
+        self.set_content(html_content)
+        self.update_title(title)
         self.children = []
         self.images = []
+        self.uuid = uuid
 
     def add_child(self, confluencePage):
         self.children.append(confluencePage)
@@ -55,7 +56,7 @@ class ConfluencePage:
         self.htmlContent = str(soup)
 
     def update_title(self, title):
-        title_candidate = title.encode("ascii", "ignore").decode()
+        title_candidate = title.replace("&", " and ").encode("ascii", "ignore").decode()
         if title_candidate in ConfluencePage.name_cache.keys():
             num_occurence = int(ConfluencePage.name_cache[title_candidate]) + 1
             self.title = title_candidate + " (in multiple boards " + str(num_occurence) + ")"
@@ -308,7 +309,8 @@ def fill_folder(confluence_node, folder_id, folders_path):
 
     if not 'Description' in content:
         confluence_node.set_content(content['Title'])
-    confluence_node.set_content(content['Description'])
+    else:
+        confluence_node.set_content(content['Description'])
 
     if not 'Items' in content:
         print("WARNING no items found for: folderId=" + folder_id + ", folderPath=" + folders_path)
@@ -316,11 +318,11 @@ def fill_folder(confluence_node, folder_id, folders_path):
 
     for item in content['Items']:
         if item['Type'] == 'card':
-            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>")
+            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>", item['ID'])
             confluence_node.add_child(card)
             fill_card(card, item['ID'], folders_path + "../cards/")
         elif item['Type'] == 'folder':
-            folder = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>")
+            folder = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>", item['ID'])
             confluence_node.add_child(folder)
             fill_folder(folder, item['ID'], folders_path)
         else:
@@ -329,7 +331,7 @@ def fill_folder(confluence_node, folder_id, folders_path):
                     item))
 
 
-rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>")
+rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>", "00000000-0000-0000-0000-000000000000")
 
 content = None
 
@@ -348,20 +350,20 @@ if "Version" in content:
 for item in content['Items']:
     # version 1
     if item['Type'] == 'boardgroup' and export_version == 1:
-        boardgroup = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>")
+        boardgroup = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>", item['ID'])
         rootNode.add_child(boardgroup)
         fill_board_group(boardgroup, item['ID'], args.collectiondir + "/board-groups/")
     if item['Type'] == 'board' and export_version == 1:
-        board = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>")
+        board = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>", item['ID'])
         rootNode.add_child(board)
         fill_board(board, item['ID'], args.collectiondir + "/boards/")
     if item['Type'] == 'card' and export_version == 1:
-        card = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>")
+        card = ConfluencePage(item['Title'], "-1", rootNode.id, "<h2>" + item['Title'] + "</h2>", item['ID'])
         rootNode.add_child(card)
         fill_card(card, item['ID'], args.collectiondir + "/cards/")
     # version 2
     if item['Type'] == 'folder' and export_version == 2:
-        folder = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>")
+        folder = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>", item['ID'])
         rootNode.add_child(folder)
         fill_folder(folder, item['ID'], args.collectiondir + "/folders/")
 for page in rootNode.children:
