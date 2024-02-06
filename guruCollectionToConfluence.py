@@ -4,6 +4,7 @@ import json
 import requests
 import os
 import mimetypes
+import datetime
 
 from bs4 import BeautifulSoup
 from pathlib import Path
@@ -13,15 +14,23 @@ from random import randint
 parser = argparse.ArgumentParser(description='Import Guru collections to Atlassian Confluence.')
 parser.add_argument('--collection-dir', dest='collectiondir',
                     help='directory where the collection file is located (default: none)', required=True)
-parser.add_argument('--user', dest='username', help='sum the integers (default: none)', required=True)
-parser.add_argument('--api-key', dest='apikey', help='the api key (default: none)', required=False)
+parser.add_argument('--user', dest='username', help='authorized user name (default: none)', required=True)
+parser.add_argument('--api-key', dest='apikey', help='the api key for the authorized user (default: none)', required=False)
 parser.add_argument('--space-key', dest='spacekey', help='the space key (default: none)', required=True)
 parser.add_argument('--organization', dest='org', help='the atlassian organization (default: none)', required=True)
 parser.add_argument('--parent', dest='parent', help='the parent page for the import (default: none)', required=True)
+parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] add disclaimer and original update '
+                                                                     'date on the the top of each card (default: '
+                                                                     'none)', required=False)
 
 args = parser.parse_args()
 print(args)
 seed(1)  # insecure
+
+if args.datedisclaimer is None:
+    datedisclaimer = 'no'
+else:
+    datedisclaimer = args.datedisclaimer.lower()
 
 
 class ConfluencePage:
@@ -253,6 +262,16 @@ def fill_card(confluence_node, card_id, cards_path):
             content = f.read()
         except yaml.YAMLError as e:
             print(e)
+
+    if datedisclaimer == 'yes':
+        externalLastUpdated = definition['externalLastUpdated']
+        lastUpdatedUTC = datetime.datetime.fromtimestamp(externalLastUpdated / 1000.0, datetime.timezone.utc)
+        lastUpdatedDateStr = lastUpdatedUTC.strftime('%Y-%m-%d')
+        lastUpdatedTimeStr = lastUpdatedUTC.strftime('%H:%M:%S %Z')
+        disclaimer = '<h6><span style="color: rgb(191,38,0);">Imported from Guru. ' \
+                     'Original update on <time datetime="{}"/> at {}</span></h6>'.format(lastUpdatedDateStr,
+                                                                                         lastUpdatedTimeStr)
+        content = disclaimer + content
 
     confluence_node.update_title(definition['Title'])
     confluence_node.set_content(content)
