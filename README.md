@@ -16,6 +16,7 @@ python3 guruCollectionToConfluence.py \
   --space-key '~PRIVATESPACE' \
   --parent 999999 \
   --organization myorg
+  --date-disclaimer yes
 ```
 
 * `--collection-dir`: path to the extracted guru collection
@@ -24,6 +25,7 @@ python3 guruCollectionToConfluence.py \
 * `--space-key`: Confluence space that will contain the imported collection (see below "obtaining space key")
 * `--parent`: page ID that should contain the imported collections (see below "obtaining parent page id")
 * `--organization`: the subdomain part / name of the organization (i.e. "bestcorp" if the Confluence url is "bestcorp.atlassian.net")
+* `--date-disclaimer`: yes will add disclaimer with the original date at the top of each page
 
 
 ### Obtaining the space key
