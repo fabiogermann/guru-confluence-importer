@@ -22,6 +22,8 @@ parser.add_argument('--parent', dest='parent', help='the parent page for the imp
 parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] add disclaimer and original update '
                                                                      'date on the the top of each card (default: '
                                                                      'none)', required=False)
+parser.add_argument('--migrate-tags', dest='migratetags', help='[yes|no] migrate tags (as labels) if were exported',
+                    required=False)
 
 args = parser.parse_args()
 print(args)
@@ -31,6 +33,11 @@ if args.datedisclaimer is None:
     datedisclaimer = 'no'
 else:
     datedisclaimer = args.datedisclaimer.lower()
+
+if args.migratetags is None:
+    migratetags = 'no'
+else:
+    migratetags = args.migratetags.lower()
 
 
 class ConfluencePage:
@@ -44,6 +51,7 @@ class ConfluencePage:
         self.children = []
         self.images = []
         self.uuid = uuid
+        self.labelsMetadata = None
 
     def add_child(self, confluencePage):
         self.children.append(confluencePage)
@@ -73,6 +81,19 @@ class ConfluencePage:
         else:
             self.title = title_candidate
             ConfluencePage.name_cache.update({title_candidate: 1})
+
+    def update_labels(self, tags):
+        if tags is None:
+            self.labelsMetadata = None
+        else:
+            labelsJson = []
+            for label in tags:
+                restrictedCharacters = [":", ";", ",", ".", "?", "&", "[", "]", "(", ")", "#", "^", "*", "@", "!", " "]
+                for restrictedCharacter in restrictedCharacters:
+                    label = label.replace(restrictedCharacter, "-")
+                nameJson = {"prefix": "global", "name": "{}".format(label)}
+                labelsJson.append(nameJson)
+            self.labelsMetadata = labelsJson
 
     def replace_img_with_confluence_image(self):
         soup = BeautifulSoup(self.htmlContent, 'html.parser')
@@ -161,6 +182,21 @@ def update_confluence_page(organization, space, page_id, user_name, user_credent
     if not raw_response.ok:
         print("ERROR from API update request: " + str(raw_response.status_code))
         print("ERROR data: " + str(data))
+        print("ERROR response: " + str(raw_response.text))
+    response = raw_response.json()
+    return response
+
+
+def update_confluence_page_labels(organization, page_id, user_name, user_credentials, labelsMetadata):
+    url = "https://" + organization + ".atlassian.net/wiki/rest/api/content/" + page_id + "/label"
+    data = labelsMetadata
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    session = requests.Session()
+    session.auth = (user_name, user_credentials)
+    raw_response = session.post(url, data=json.dumps(data), headers=headers)
+    if not raw_response.ok:
+        print("ERROR from API update request: " + str(raw_response.status_code))
+        print("ERROR data: " + str(json.dumps(data)))
         print("ERROR response: " + str(raw_response.text))
     response = raw_response.json()
     return response
@@ -273,7 +309,13 @@ def fill_card(confluence_node, card_id, cards_path):
                                                                                          lastUpdatedTimeStr)
         content = disclaimer + content
 
+    try:
+        tags = definition['Tags']
+    except:
+        tags = None
+
     confluence_node.update_title(definition['Title'])
+    confluence_node.update_labels(tags)
     confluence_node.set_content(content)
 
 
@@ -287,6 +329,15 @@ def create_node(confluence_node, organization, space, user_name, user_credential
     new_page_id = create_op['id']
     confluence_node.set_id(new_page_id)
     print("CREATED " + new_page_id)
+
+    if migratetags == 'yes':
+        if confluence_node.labelsMetadata is not None:
+            updateLabels = update_confluence_page_labels(organization, new_page_id, user_name, user_credentials,
+                                                         confluence_node.labelsMetadata)
+            print("UPDATED LABELS " + new_page_id)
+        else:
+            print("NO LABELS EXIST " + new_page_id)
+
     # upload images
     for image in confluence_node.images:
         print("UPLOADED " + image)
