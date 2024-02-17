@@ -15,22 +15,44 @@ parser = argparse.ArgumentParser(description='Import Guru collections to Atlassi
 parser.add_argument('--collection-dir', dest='collectiondir',
                     help='directory where the collection file is located (default: none)', required=True)
 parser.add_argument('--user', dest='username', help='authorized user name (default: none)', required=True)
-parser.add_argument('--api-key', dest='apikey', help='the api key for the authorized user (default: none)', required=False)
+parser.add_argument('--api-key', dest='apikey', help='the api key for the authorized user (default: none)',
+                    required=False)
 parser.add_argument('--space-key', dest='spacekey', help='the space key (default: none)', required=True)
 parser.add_argument('--organization', dest='org', help='the atlassian organization (default: none)', required=True)
 parser.add_argument('--parent', dest='parent', help='the parent page for the import (default: none)', required=True)
 parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] add disclaimer and original update '
                                                                      'date on the the top of each card (default: '
                                                                      'none)', required=False)
+parser.add_argument('--migrate-tags', dest='migratetags', help='[yes|no] migrate tags (as labels) if were exported',
+                    required=False)
 
 args = parser.parse_args()
 print(args)
-seed(1)  # insecure
+seed(datetime.datetime.now().timestamp())
 
 if args.datedisclaimer is None:
     datedisclaimer = 'no'
 else:
     datedisclaimer = args.datedisclaimer.lower()
+
+if args.migratetags is None:
+    migratetags = 'no'
+else:
+    migratetags = args.migratetags.lower()
+
+
+def get_element_attribute(element, attribute_name, default_value=''):
+    try:
+        result = element[attribute_name]
+    except:
+        result = default_value
+    return result
+
+
+def create_simple_tag(soup, tag_type, tag_text):
+    tag = soup.new_tag(tag_type)
+    tag.string = tag_text
+    return tag
 
 
 class ConfluencePage:
@@ -44,6 +66,7 @@ class ConfluencePage:
         self.children = []
         self.images = []
         self.uuid = uuid
+        self.labelsMetadata = None
 
     def add_child(self, confluencePage):
         self.children.append(confluencePage)
@@ -61,7 +84,32 @@ class ConfluencePage:
         for img in soup.findAll('img'):
             self.images.append(os.path.basename(img['src']))
         for ruler in soup.findAll('hr'):
-            ruler.decompose()
+            ruler_new = soup.new_tag('hr')
+            ruler.replaceWith(ruler_new)
+        for iframe in soup.findAll('iframe'):
+            src = get_element_attribute(iframe, 'src', '')
+            width = get_element_attribute(iframe, 'width', '100%')
+            height = get_element_attribute(iframe, 'height', '630')
+            iframe_new = soup.new_tag('ac:structured-macro')
+            iframe_new['ac:name'] = 'iframe'
+            iframe_new['ac:schema-version'] = '1'
+            iframe_new['data-layout'] = 'default'
+            iframe_new_param1 = soup.new_tag('ac:parameter')
+            iframe_new_param1['ac:name'] = 'src'
+            iframe_new_param1_url = soup.new_tag('ri:url')
+            iframe_new_param1_url['ri:value'] = src
+            iframe_new_param1.append(iframe_new_param1_url)
+            iframe_new.append(iframe_new_param1)
+            iframe_new_param2 = soup.new_tag('ac:parameter')
+            iframe_new_param2['ac:name'] = 'width'
+            iframe_new_param2.string = width
+            iframe_new.append(iframe_new_param2)
+            iframe_new_param3 = soup.new_tag('ac:parameter')
+            iframe_new_param3['ac:name'] = 'height'
+            iframe_new_param3.string = height
+            iframe_new.append(iframe_new_param3)
+            iframe.replace_with(iframe_new)
+
         self.htmlContent = str(soup)
 
     def update_title(self, title):
@@ -73,6 +121,19 @@ class ConfluencePage:
         else:
             self.title = title_candidate
             ConfluencePage.name_cache.update({title_candidate: 1})
+
+    def update_labels(self, tags):
+        if tags is None:
+            self.labelsMetadata = None
+        else:
+            labelsJson = []
+            for label in tags:
+                restrictedCharacters = [":", ";", ",", ".", "?", "&", "[", "]", "(", ")", "#", "^", "*", "@", "!", " "]
+                for restrictedCharacter in restrictedCharacters:
+                    label = label.replace(restrictedCharacter, "-")
+                nameJson = {"prefix": "global", "name": "{}".format(label)}
+                labelsJson.append(nameJson)
+            self.labelsMetadata = labelsJson
 
     def replace_img_with_confluence_image(self):
         soup = BeautifulSoup(self.htmlContent, 'html.parser')
@@ -127,9 +188,13 @@ def create_confluence_page(organization, space, parent, user_name, user_credenti
     session.auth = (user_name, user_credentials)
     raw_response = session.post(url, data=json.dumps(data), headers=headers)
     if not raw_response.ok:
-        print("ERROR from API create request: " + str(raw_response.status_code))
-        print("ERROR data: " + str(data))
-        print("ERROR response: " + str(raw_response.text))
+        if raw_response.status_code == 400:
+            if 'a page already exists with the same title in this space' in raw_response.text.lower():
+                print('DUPLICATE TITLE - {}'.format(title))
+        else:
+            print("ERROR from API create request: " + str(raw_response.status_code))
+            print("ERROR data: " + str(data))
+            print("ERROR response: " + str(raw_response.text))
     response = raw_response.json()
     return response
 
@@ -161,6 +226,21 @@ def update_confluence_page(organization, space, page_id, user_name, user_credent
     if not raw_response.ok:
         print("ERROR from API update request: " + str(raw_response.status_code))
         print("ERROR data: " + str(data))
+        print("ERROR response: " + str(raw_response.text))
+    response = raw_response.json()
+    return response
+
+
+def update_confluence_page_labels(organization, page_id, user_name, user_credentials, labelsMetadata):
+    url = "https://" + organization + ".atlassian.net/wiki/rest/api/content/" + page_id + "/label"
+    data = labelsMetadata
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    session = requests.Session()
+    session.auth = (user_name, user_credentials)
+    raw_response = session.post(url, data=json.dumps(data), headers=headers)
+    if not raw_response.ok:
+        print("ERROR from API update request: " + str(raw_response.status_code))
+        print("ERROR data: " + str(json.dumps(data)))
         print("ERROR response: " + str(raw_response.text))
     response = raw_response.json()
     return response
@@ -273,7 +353,13 @@ def fill_card(confluence_node, card_id, cards_path):
                                                                                          lastUpdatedTimeStr)
         content = disclaimer + content
 
+    try:
+        tags = definition['Tags']
+    except:
+        tags = None
+
     confluence_node.update_title(definition['Title'])
+    confluence_node.update_labels(tags)
     confluence_node.set_content(content)
 
 
@@ -287,6 +373,15 @@ def create_node(confluence_node, organization, space, user_name, user_credential
     new_page_id = create_op['id']
     confluence_node.set_id(new_page_id)
     print("CREATED " + new_page_id)
+
+    if migratetags == 'yes':
+        if confluence_node.labelsMetadata is not None:
+            updateLabels = update_confluence_page_labels(organization, new_page_id, user_name, user_credentials,
+                                                         confluence_node.labelsMetadata)
+            print("UPDATED LABELS " + new_page_id)
+        else:
+            print("NO LABELS EXIST " + new_page_id)
+
     # upload images
     for image in confluence_node.images:
         print("UPLOADED " + image)
@@ -337,7 +432,8 @@ def fill_folder(confluence_node, folder_id, folders_path):
 
     for item in content['Items']:
         if item['Type'] == 'card':
-            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>", item['ID'])
+            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>",
+                                  item['ID'])
             confluence_node.add_child(card)
             fill_card(card, item['ID'], folders_path + "../cards/")
         elif item['Type'] == 'folder':
@@ -350,7 +446,8 @@ def fill_folder(confluence_node, folder_id, folders_path):
                     item))
 
 
-rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>", "00000000-0000-0000-0000-000000000000")
+rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>",
+                          "00000000-0000-0000-0000-000000000000")
 
 content = None
 
