@@ -5,32 +5,26 @@ import requests
 import os
 import mimetypes
 import datetime
+import logging
 
 from bs4 import BeautifulSoup
 from pathlib import Path
 from random import seed
 from random import randint
 
-parser = argparse.ArgumentParser(description='Import Guru collections to Atlassian Confluence.')
-parser.add_argument('--collection-dir', dest='collectiondir',
-                    help='directory where the collection file is located (default: none)', required=True)
-parser.add_argument('--user', dest='username', help='authorized user name (default: none)', required=True)
-parser.add_argument('--api-key', dest='apikey', help='the api key for the authorized user (default: none)', required=False)
-parser.add_argument('--space-key', dest='spacekey', help='the space key (default: none)', required=True)
-parser.add_argument('--organization', dest='org', help='the atlassian organization (default: none)', required=True)
-parser.add_argument('--parent', dest='parent', help='the parent page for the import (default: none)', required=True)
-parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] add disclaimer and original update '
-                                                                     'date on the the top of each card (default: '
-                                                                     'none)', required=False)
 
-args = parser.parse_args()
-print(args)
-seed(1)  # insecure
+def get_element_attribute(element, attribute_name, default_value=''):
+    try:
+        result = element[attribute_name]
+    except:
+        result = default_value
+    return result
 
-if args.datedisclaimer is None:
-    datedisclaimer = 'no'
-else:
-    datedisclaimer = args.datedisclaimer.lower()
+
+def create_simple_tag(soup, tag_type, tag_text):
+    tag = soup.new_tag(tag_type)
+    tag.string = tag_text
+    return tag
 
 
 class ConfluencePage:
@@ -43,7 +37,9 @@ class ConfluencePage:
         self.update_title(title)
         self.children = []
         self.images = []
+        self.attachments = []
         self.uuid = uuid
+        self.labelsMetadata = None
 
     def add_child(self, confluencePage):
         self.children.append(confluencePage)
@@ -60,8 +56,40 @@ class ConfluencePage:
         soup = BeautifulSoup(content, 'html.parser')
         for img in soup.findAll('img'):
             self.images.append(os.path.basename(img['src']))
+        for attachment in soup.findAll('a'):
+            href = get_element_attribute(attachment, 'href', '')
+            if href.startswith('resources/'):
+                filename = os.path.basename(href)
+                self.attachments.append(filename)
+            if 'getguru.com' in href:
+                logging.warning('WARNING - Card "{}" contains reference to getguru.com'.format(self.title))
         for ruler in soup.findAll('hr'):
-            ruler.decompose()
+            ruler_new = soup.new_tag('hr')
+            ruler.replaceWith(ruler_new)
+        for iframe in soup.findAll('iframe'):
+            src = get_element_attribute(iframe, 'src', '')
+            width = get_element_attribute(iframe, 'width', '100%')
+            height = get_element_attribute(iframe, 'height', '630')
+            iframe_new = soup.new_tag('ac:structured-macro')
+            iframe_new['ac:name'] = 'iframe'
+            iframe_new['ac:schema-version'] = '1'
+            iframe_new['data-layout'] = 'default'
+            iframe_new_param1 = soup.new_tag('ac:parameter')
+            iframe_new_param1['ac:name'] = 'src'
+            iframe_new_param1_url = soup.new_tag('ri:url')
+            iframe_new_param1_url['ri:value'] = src
+            iframe_new_param1.append(iframe_new_param1_url)
+            iframe_new.append(iframe_new_param1)
+            iframe_new_param2 = soup.new_tag('ac:parameter')
+            iframe_new_param2['ac:name'] = 'width'
+            iframe_new_param2.string = width
+            iframe_new.append(iframe_new_param2)
+            iframe_new_param3 = soup.new_tag('ac:parameter')
+            iframe_new_param3['ac:name'] = 'height'
+            iframe_new_param3.string = height
+            iframe_new.append(iframe_new_param3)
+            iframe.replace_with(iframe_new)
+
         self.htmlContent = str(soup)
 
     def update_title(self, title):
@@ -74,6 +102,19 @@ class ConfluencePage:
             self.title = title_candidate
             ConfluencePage.name_cache.update({title_candidate: 1})
 
+    def update_labels(self, tags):
+        if tags is None:
+            self.labelsMetadata = None
+        else:
+            labelsJson = []
+            for label in tags:
+                restrictedCharacters = [":", ";", ",", ".", "?", "&", "[", "]", "(", ")", "#", "^", "*", "@", "!", " "]
+                for restrictedCharacter in restrictedCharacters:
+                    label = label.replace(restrictedCharacter, "-")
+                nameJson = {"prefix": "global", "name": "{}".format(label)}
+                labelsJson.append(nameJson)
+            self.labelsMetadata = labelsJson
+
     def replace_img_with_confluence_image(self):
         soup = BeautifulSoup(self.htmlContent, 'html.parser')
         for img in soup.findAll('img'):
@@ -81,6 +122,24 @@ class ConfluencePage:
             soup_ac_image = BeautifulSoup("<ac:image><ri:attachment ri:filename=\"" + filename + "\" /></ac:image>",
                                           'html.parser')
             img.replace_with(soup_ac_image)
+        self.htmlContent = str(soup)
+
+    def replace_att_with_confluence_attachment(self):
+        soup = BeautifulSoup(self.htmlContent, 'html.parser')
+        for attachment in soup.findAll('a'):
+            href = get_element_attribute(attachment, 'href', '')
+            if href.startswith('resources/'):
+                filename = os.path.basename(href)
+                attachment_new = soup.new_tag('ac:structured-macro')
+                attachment_new['ac:name'] = 'view-file'
+                attachment_new_param1 = soup.new_tag('ac:parameter')
+                attachment_new_param1['ac:name'] = 'name'
+                attachment_new_ri = soup.new_tag('ri:attachment')
+                attachment_new_ri['ri:filename'] = filename
+                attachment_new_param1.append(attachment_new_ri)
+                attachment_new.append(attachment_new_param1)
+                attachment.replace_with(attachment_new)
+
         self.htmlContent = str(soup)
 
     def __str__(self):
@@ -127,9 +186,16 @@ def create_confluence_page(organization, space, parent, user_name, user_credenti
     session.auth = (user_name, user_credentials)
     raw_response = session.post(url, data=json.dumps(data), headers=headers)
     if not raw_response.ok:
-        print("ERROR from API create request: " + str(raw_response.status_code))
-        print("ERROR data: " + str(data))
-        print("ERROR response: " + str(raw_response.text))
+        if raw_response.status_code == 400:
+            if 'a page already exists with the same title in this space' in raw_response.text.lower():
+                logging.warning('DUPLICATE TITLE - {}'.format(title))
+        else:
+            logging.error("ERROR from API create request: " + str(raw_response.status_code))
+            logging.error("ERROR data: " + str(data))
+            logging.error("ERROR response: " + str(raw_response.text))
+            print("ERROR from API create request: " + str(raw_response.status_code))
+            print("ERROR data: " + str(data))
+            print("ERROR response: " + str(raw_response.text))
     response = raw_response.json()
     return response
 
@@ -159,8 +225,29 @@ def update_confluence_page(organization, space, page_id, user_name, user_credent
     session.auth = (user_name, user_credentials)
     raw_response = session.put(url, data=json.dumps(data), headers=headers)
     if not raw_response.ok:
+        logging.error("ERROR from API update request: " + str(raw_response.status_code))
+        logging.error("ERROR data: " + str(data))
+        logging.error("ERROR response: " + str(raw_response.text))
         print("ERROR from API update request: " + str(raw_response.status_code))
         print("ERROR data: " + str(data))
+        print("ERROR response: " + str(raw_response.text))
+    response = raw_response.json()
+    return response
+
+
+def update_confluence_page_labels(organization, page_id, user_name, user_credentials, labelsMetadata):
+    url = "https://" + organization + ".atlassian.net/wiki/rest/api/content/" + page_id + "/label"
+    data = labelsMetadata
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    session = requests.Session()
+    session.auth = (user_name, user_credentials)
+    raw_response = session.post(url, data=json.dumps(data), headers=headers)
+    if not raw_response.ok:
+        logging.error("ERROR from API update request: " + str(raw_response.status_code))
+        logging.error("ERROR data: " + str(json.dumps(data)))
+        logging.error("ERROR response: " + str(raw_response.text))
+        print("ERROR from API update request: " + str(raw_response.status_code))
+        print("ERROR data: " + str(json.dumps(data)))
         print("ERROR response: " + str(raw_response.text))
     response = raw_response.json()
     return response
@@ -185,6 +272,7 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
             file_data = {'file': (file_name, f, content_type)}
             raw_response = session.post(url, files=file_data, headers=headers)
             if not raw_response.ok:
+                logging.error("ERROR from API upload request: " + str(raw_response.status_code))
                 print("ERROR from API upload request: " + str(raw_response.status_code))
             response = raw_response.json()
         except yaml.YAMLError as e:
@@ -204,6 +292,7 @@ def fill_board(confluence_node, board_id, boards_path):
             print(e)
 
     if not 'Items' in content:
+        logging.warning("WARNING no items found for: boardId=" + board_id + ", boardPath=" + boards_path)
         print("WARNING no items found for: boardId=" + board_id + ", boardPath=" + boards_path)
         return
 
@@ -215,7 +304,9 @@ def fill_board(confluence_node, board_id, boards_path):
         elif item['Type'] == 'section':
             section = ConfluencePage(item['Title'], "not created yet", confluence_node.id, "<h2>placeholder</h2>")
             confluence_node.add_child(section)
-            if not 'Items' in item:
+            if 'Items' not in item:
+                logging.warning(
+                    "WARNING no items found for section: boardId=" + board_id + ", boardPath=" + boards_path)
                 print("WARNING no items found for section: boardId=" + board_id + ", boardPath=" + boards_path)
                 return
             for subitem in item['Items']:
@@ -223,8 +314,12 @@ def fill_board(confluence_node, board_id, boards_path):
                 section.add_child(card)
                 fill_card(card, subitem['ID'], boards_path + "../cards/")
         else:
-            print("ERROR not a CARD/SECTION type: boardId=" + board_id + ", boardPath=" + boards_path + ", item=" + str(
-                item))
+            logging.error(
+                "ERROR not a CARD/SECTION type: boardId=" + board_id + ', boardPath=' + boards_path + ', item=' + str(
+                    item))
+            print(
+                "ERROR not a CARD/SECTION type: boardId=" + board_id + ', boardPath=' + boards_path + ', item=' + str(
+                    item))
 
 
 def fill_board_group(confluence_node, board_group_id, board_group_path):
@@ -233,9 +328,12 @@ def fill_board_group(confluence_node, board_group_id, board_group_path):
         try:
             content = yaml.safe_load(f)
         except yaml.YAMLError as e:
+            logging.error(e)
             print(e)
 
-    if not 'Boards' in content:
+    if 'Boards' not in content:
+        logging.warning(
+            "WARNING no items found for: boardGroupId=" + board_group_id + ", boardGroupPath=" + board_group_path)
         print("WARNING no items found for: boardGroupId=" + board_group_id + ", boardGroupPath=" + board_group_path)
         return
 
@@ -255,12 +353,14 @@ def fill_card(confluence_node, card_id, cards_path):
         try:
             definition = yaml.safe_load(f)
         except yaml.YAMLError as e:
+            logging.error(e)
             print(e)
 
     with open(cards_path + "/" + card_id + ".html", "r") as f:
         try:
             content = f.read()
         except yaml.YAMLError as e:
+            logging.error(e)
             print(e)
 
     if datedisclaimer == 'yes':
@@ -273,40 +373,69 @@ def fill_card(confluence_node, card_id, cards_path):
                                                                                          lastUpdatedTimeStr)
         content = disclaimer + content
 
+    try:
+        tags = definition['Tags']
+    except:
+        tags = None
+
     confluence_node.update_title(definition['Title'])
+    confluence_node.update_labels(tags)
     confluence_node.set_content(content)
 
 
 def create_node(confluence_node, organization, space, user_name, user_credentials, collections_dir):
     create_op = create_confluence_page(organization, space, confluence_node.parentId, user_name, user_credentials,
                                        confluence_node.title, confluence_node.htmlContent)
-    if not 'id' in create_op:
+    if 'id' not in create_op:
+        new_title = confluence_node.title + " (conflict " + str(randint(1000, 9999)) + ")"
+        confluence_node.title = new_title
         create_op = create_confluence_page(organization, space, confluence_node.parentId, user_name, user_credentials,
-                                           confluence_node.title + " (conflict " + str(randint(111, 222)) + ")",
-                                           confluence_node.htmlContent)
+                                           confluence_node.title, confluence_node.htmlContent)
+
     new_page_id = create_op['id']
     confluence_node.set_id(new_page_id)
-    print("CREATED " + new_page_id)
+    logging.info('CREATED ' + new_page_id)
+
+    if migratetags == 'yes':
+        if confluence_node.labelsMetadata is not None:
+            updateLabels = update_confluence_page_labels(organization, new_page_id, user_name, user_credentials,
+                                                         confluence_node.labelsMetadata)
+            logging.info('UPDATED LABELS ' + new_page_id)
+        else:
+            logging.info('NO LABELS EXIST ' + new_page_id)
+
     # upload images
     for image in confluence_node.images:
-        print("UPLOADED " + image)
         upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image,
-                                              collections_dir + "/resources/")
+                                              collections_dir + '/resources/')
+        logging.info('IMAGE UPLOADED ' + image)
+
     # update content with image links
     confluence_node.replace_img_with_confluence_image()
-    if len(confluence_node.images) > 0:
+
+    # upload attachments
+    for attachment in confluence_node.attachments:
+        upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, attachment,
+                                              collections_dir + '/resources/')
+        logging.info('ATTACHMENT UPLOADED ' + attachment)
+
+    # update content with attachment links
+    confluence_node.replace_att_with_confluence_attachment()
+
+    if len(confluence_node.images) > 0 or len(confluence_node.attachments) > 0:
         update_op = update_confluence_page(organization, space, new_page_id, user_name, user_credentials,
                                            confluence_node.title, confluence_node.htmlContent)
-        if not 'id' in update_op:
+        if 'id' not in update_op:
             update_op = update_confluence_page(organization, space, new_page_id, user_name, user_credentials,
                                                confluence_node.title, confluence_node.htmlContent)
         if 'id' in update_op:
             update_page_id = update_op['id']
-            print("UPDATED " + update_page_id)
+            logging.info('UPDATED ' + update_page_id)
         else:
-            print("UPDATED FAILED" + new_page_id)
+            logging.info('UPDATE FAILED ' + new_page_id)
     else:
-        print("UPDATED not needed")
+        logging.info('NO IMAGES or ATTACHMENTS - UPDATE not needed')
+
     # continue in children
     if len(confluence_node.children) > 0:
         for page in confluence_node.children:
@@ -319,25 +448,27 @@ def fill_folder(confluence_node, folder_id, folders_path):
         try:
             content = yaml.safe_load(f)
         except yaml.YAMLError as e:
+            logging.error(e)
             print(e)
 
     if not 'Title' in content:
-        print("WARNING no title found for: folderId=" + folder_id + ", folderPath=" + folders_path)
+        logging.warning('WARNING no title found for: folderId=' + folder_id + ', folderPath=' + folders_path)
         return
     confluence_node.update_title(content['Title'])
 
-    if not 'Description' in content:
+    if 'Description' not in content:
         confluence_node.set_content(content['Title'])
     else:
         confluence_node.set_content(content['Description'])
 
-    if not 'Items' in content:
-        print("WARNING no items found for: folderId=" + folder_id + ", folderPath=" + folders_path)
+    if 'Items' not in content:
+        logging.warning('WARNING no items found for: folderId=' + folder_id + ', folderPath=' + folders_path)
         return
 
     for item in content['Items']:
         if item['Type'] == 'card':
-            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>", item['ID'])
+            card = ConfluencePage("not yet available", "not created yet", confluence_node.id, "<h2>placeholder</h2>",
+                                  item['ID'])
             confluence_node.add_child(card)
             fill_card(card, item['ID'], folders_path + "../cards/")
         elif item['Type'] == 'folder':
@@ -345,12 +476,56 @@ def fill_folder(confluence_node, folder_id, folders_path):
             confluence_node.add_child(folder)
             fill_folder(folder, item['ID'], folders_path)
         else:
+            logging.error(
+                'ERROR not a CARD/SECTION type: folderId=' + folder_id + ', folderPath=' + folders_path + ', item=' + str(item))
             print(
-                "ERROR not a CARD/SECTION type: folderId=" + folder_id + ", folderPath=" + folders_path + ", item=" + str(
-                    item))
+                'ERROR not a CARD/SECTION type: folderId=' + folder_id + ", folderPath=" + folders_path + ", item=" + str(item))
 
 
-rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>", "00000000-0000-0000-0000-000000000000")
+def initiate_log():
+    currentPath = os.path.dirname(os.path.realpath(__file__))
+    scriptName = os.path.basename(__file__).split('.py')[0]
+    logFile = currentPath + '/logs/' + scriptName + '_log.log'
+    if not os.path.isdir(currentPath + '/logs'):
+        os.mkdir(currentPath + '/logs')
+    logging.basicConfig(filename=logFile, filemode='w',
+                        format='[%(asctime)s] %(module)-25s | %(levelname)-8s |  %(message)s',
+                        datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+    logging.info('Starting...')
+
+
+initiate_log()
+parser = argparse.ArgumentParser(description='Import Guru collections to Atlassian Confluence.')
+parser.add_argument('--collection-dir', dest='collectiondir',
+                    help='directory where the collection file is located (default: none)', required=True)
+parser.add_argument('--user', dest='username', help='authorized user name (default: none)', required=True)
+parser.add_argument('--api-key', dest='apikey', help='the api key for the authorized user (default: none)',
+                    required=False)
+parser.add_argument('--space-key', dest='spacekey', help='the space key (default: none)', required=True)
+parser.add_argument('--organization', dest='org', help='the atlassian organization (default: none)', required=True)
+parser.add_argument('--parent', dest='parent', help='the parent page for the import (default: none)', required=True)
+parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] add disclaimer and original update '
+                                                                     'date on the the top of each card (default: '
+                                                                     'none)', required=False)
+parser.add_argument('--migrate-tags', dest='migratetags', help='[yes|no] migrate tags (as labels) if were exported',
+                    required=False)
+
+args = parser.parse_args()
+logging.info('Arguments {}'.format(args))
+seed(datetime.datetime.now().timestamp())
+
+if args.datedisclaimer is None:
+    datedisclaimer = 'no'
+else:
+    datedisclaimer = args.datedisclaimer.lower()
+
+if args.migratetags is None:
+    migratetags = 'no'
+else:
+    migratetags = args.migratetags.lower()
+
+rootNode = ConfluencePage("DemoImport", args.parent, "-inf", "<h1>Guru import</h1>",
+                          "00000000-0000-0000-0000-000000000000")
 
 content = None
 
@@ -358,11 +533,12 @@ with open(args.collectiondir + "/collection.yaml", "r") as f:
     try:
         content = yaml.safe_load(f)
     except yaml.YAMLError as e:
+        logging.error(e)
         print(e)
 
 export_version = 1
 
-if "Version" in content:
+if 'Version' in content:
     if content['Version'] == 2:
         export_version = 2
 
