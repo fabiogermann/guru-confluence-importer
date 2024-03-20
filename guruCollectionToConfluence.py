@@ -212,9 +212,7 @@ def create_confluence_page(organization, space, parent, user_name, user_credenti
             logging.error("ERROR from API create request: " + str(raw_response.status_code))
             logging.error("ERROR data: " + str(data))
             logging.error("ERROR response: " + str(raw_response.text))
-            print("ERROR from API create request: " + str(raw_response.status_code))
-            print("ERROR data: " + str(data))
-            print("ERROR response: " + str(raw_response.text))
+
     response = raw_response.json()
     return response
 
@@ -247,9 +245,7 @@ def update_confluence_page(organization, space, page_id, user_name, user_credent
         logging.error("ERROR from API update request: " + str(raw_response.status_code))
         logging.error("ERROR data: " + str(data))
         logging.error("ERROR response: " + str(raw_response.text))
-        print("ERROR from API update request: " + str(raw_response.status_code))
-        print("ERROR data: " + str(data))
-        print("ERROR response: " + str(raw_response.text))
+
     response = raw_response.json()
     return response
 
@@ -265,9 +261,7 @@ def update_confluence_page_labels(organization, page_id, user_name, user_credent
         logging.error("ERROR from API update request: " + str(raw_response.status_code))
         logging.error("ERROR data: " + str(json.dumps(data)))
         logging.error("ERROR response: " + str(raw_response.text))
-        print("ERROR from API update request: " + str(raw_response.status_code))
-        print("ERROR data: " + str(json.dumps(data)))
-        print("ERROR response: " + str(raw_response.text))
+
     response = raw_response.json()
     return response
 
@@ -292,12 +286,11 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
             raw_response = session.post(url, files=file_data, headers=headers)
             if not raw_response.ok:
                 logging.error("ERROR from API upload request: " + str(raw_response.status_code))
-                print("ERROR from API upload request: " + str(raw_response.status_code))
             response = raw_response.json()
         except yaml.YAMLError as e:
-            print(e)
+            logging.error(e)
         except FileNotFoundError as e:
-            print(e)
+            logging.error(e)
 
     return response
 
@@ -308,11 +301,10 @@ def fill_board(confluence_node, board_id, boards_path):
         try:
             content = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            print(e)
+            logging.error(e)
 
-    if not 'Items' in content:
+    if 'Items' not in content:
         logging.warning("WARNING no items found for: boardId=" + board_id + ", boardPath=" + boards_path)
-        print("WARNING no items found for: boardId=" + board_id + ", boardPath=" + boards_path)
         return
 
     for item in content['Items']:
@@ -326,7 +318,6 @@ def fill_board(confluence_node, board_id, boards_path):
             if 'Items' not in item:
                 logging.warning(
                     "WARNING no items found for section: boardId=" + board_id + ", boardPath=" + boards_path)
-                print("WARNING no items found for section: boardId=" + board_id + ", boardPath=" + boards_path)
                 return
             for subitem in item['Items']:
                 card = ConfluencePage("not yet available", "not created yet", section.id, "<h2>placeholder</h2>")
@@ -334,9 +325,6 @@ def fill_board(confluence_node, board_id, boards_path):
                 fill_card(card, subitem['ID'], boards_path + "../cards/")
         else:
             logging.error(
-                "ERROR not a CARD/SECTION type: boardId=" + board_id + ', boardPath=' + boards_path + ', item=' + str(
-                    item))
-            print(
                 "ERROR not a CARD/SECTION type: boardId=" + board_id + ', boardPath=' + boards_path + ', item=' + str(
                     item))
 
@@ -348,12 +336,10 @@ def fill_board_group(confluence_node, board_group_id, board_group_path):
             content = yaml.safe_load(f)
         except yaml.YAMLError as e:
             logging.error(e)
-            print(e)
 
     if 'Boards' not in content:
         logging.warning(
             "WARNING no items found for: boardGroupId=" + board_group_id + ", boardGroupPath=" + board_group_path)
-        print("WARNING no items found for: boardGroupId=" + board_group_id + ", boardGroupPath=" + board_group_path)
         return
 
     counter = 1
@@ -373,14 +359,12 @@ def fill_card(confluence_node, card_id, cards_path):
             definition = yaml.safe_load(f)
         except yaml.YAMLError as e:
             logging.error(e)
-            print(e)
 
     with open(cards_path + "/" + card_id + ".html", "r") as f:
         try:
             content = f.read()
         except yaml.YAMLError as e:
             logging.error(e)
-            print(e)
 
     if datedisclaimer == 'yes':
         externalLastUpdated = definition['externalLastUpdated']
@@ -468,7 +452,6 @@ def fill_folder(confluence_node, folder_id, folders_path):
             content = yaml.safe_load(f)
         except yaml.YAMLError as e:
             logging.error(e)
-            print(e)
 
     if not 'Title' in content:
         logging.warning('WARNING no title found for: folderId=' + folder_id + ', folderPath=' + folders_path)
@@ -497,8 +480,6 @@ def fill_folder(confluence_node, folder_id, folders_path):
         else:
             logging.error(
                 'ERROR not a CARD/SECTION type: folderId=' + folder_id + ', folderPath=' + folders_path + ', item=' + str(item))
-            print(
-                'ERROR not a CARD/SECTION type: folderId=' + folder_id + ", folderPath=" + folders_path + ", item=" + str(item))
 
 
 def initiate_log():
@@ -553,7 +534,6 @@ with open(args.collectiondir + "/collection.yaml", "r") as f:
         content = yaml.safe_load(f)
     except yaml.YAMLError as e:
         logging.error(e)
-        print(e)
 
 export_version = 1
 
