@@ -26,6 +26,25 @@ def create_simple_tag(soup, tag_type, tag_text):
     tag.string = tag_text
     return tag
 
+if args.migratetags is None:
+    migratetags = 'no'
+else:
+    migratetags = args.migratetags.lower()
+
+
+def get_element_attribute(element, attribute_name, default_value=''):
+    try:
+        result = element[attribute_name]
+    except:
+        result = default_value
+    return result
+
+
+def create_simple_tag(soup, tag_type, tag_text):
+    tag = soup.new_tag(tag_type)
+    tag.string = tag_text
+    return tag
+
 
 class ConfluencePage:
     name_cache = {'root': 1}
