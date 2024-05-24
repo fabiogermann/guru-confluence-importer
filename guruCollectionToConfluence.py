@@ -3,6 +3,7 @@ import argparse
 import json
 import requests
 import os
+import sys
 import mimetypes
 import datetime
 import logging
@@ -477,19 +478,26 @@ def fill_folder(confluence_node, folder_id, folders_path):
                 'ERROR not a CARD/SECTION type: folderId=' + folder_id + ', folderPath=' + folders_path + ', item=' + str(item))
 
 
-def initiate_log():
+def initiate_log(quiet):
     currentPath = os.path.dirname(os.path.realpath(__file__))
     scriptName = os.path.basename(__file__).split('.py')[0]
     logFile = currentPath + '/logs/' + scriptName + '_log.log'
     if not os.path.isdir(currentPath + '/logs'):
         os.mkdir(currentPath + '/logs')
-    logging.basicConfig(filename=logFile, filemode='w',
-                        format='[%(asctime)s] %(module)-25s | %(levelname)-8s |  %(message)s',
-                        datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+
+    log_handlers =  [logging.FileHandler(logFile)] if quiet else [
+            logging.FileHandler(logFile),
+            logging.StreamHandler()
+        ]
+    logging.basicConfig(
+        format='[%(asctime)s] %(module)-25s | %(levelname)-8s |  %(message)s',
+        datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO,
+        handlers=log_handlers
+    )
+
     logging.info('Starting...')
 
 
-initiate_log()
 parser = argparse.ArgumentParser(description='Import Guru collections to Atlassian Confluence.')
 parser.add_argument('--collection-dir', dest='collectiondir',
                     help='directory where the collection file is located (default: none)', required=True)
@@ -504,10 +512,14 @@ parser.add_argument('--date-disclaimer', dest='datedisclaimer', help='[yes|no] a
                                                                      'none)', required=False)
 parser.add_argument('--migrate-tags', dest='migratetags', help='[yes|no] migrate tags (as labels) if were exported',
                     required=False)
+parser.add_argument('--quiet', action='store_true', help='No output on stdout',
+                    required=False, default=False)
 
 args = parser.parse_args()
-logging.info('Arguments {}'.format(args))
 seed(datetime.datetime.now().timestamp())
+
+initiate_log(args.quiet)
+logging.info('Arguments {}'.format(args))
 
 if args.datedisclaimer is None:
     datedisclaimer = 'no'
