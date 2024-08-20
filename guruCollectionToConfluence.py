@@ -3,7 +3,7 @@ import argparse
 import json
 import requests
 import os
-import sys
+import re
 import mimetypes
 import datetime
 import logging
@@ -519,7 +519,12 @@ args = parser.parse_args()
 seed(datetime.datetime.now().timestamp())
 
 initiate_log(args.quiet)
-logging.info('Arguments {}'.format(args))
+
+# Regular expression pattern to find the apikey value
+pattern = r"(apikey=')\w+(')"
+# Replace the value of apikey with "**********"
+sanitized_arguments = re.sub(pattern, r"\1**********\2", 'Arguments {}'.format(args))
+logging.info(sanitized_arguments)
 
 if args.datedisclaimer is None:
     datedisclaimer = 'no'
@@ -567,5 +572,9 @@ for item in content['Items']:
         folder = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>", item['ID'])
         rootNode.add_child(folder)
         fill_folder(folder, item['ID'], args.collectiondir + "/folders/")
+    if item['Type'] == 'card' and export_version == 2:
+        card = ConfluencePage("unknown", "-1", rootNode.id, "<h2>unknown</h2>", item['ID'])
+        rootNode.add_child(card)
+        fill_card(card, item['ID'], args.collectiondir + "/cards/")
 for page in rootNode.children:
     create_node(page, args.org, args.spacekey, args.username, args.apikey, args.collectiondir)
