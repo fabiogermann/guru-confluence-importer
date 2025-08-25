@@ -108,7 +108,7 @@ class ConfluencePage:
         self.htmlContent = str(soup)
 
     def update_title(self, title):
-        title_candidate = title.replace("&", " and ").encode("ascii", "ignore").decode()
+        title_candidate = title.replace("&", " and ").encode("utf-8", "ignore").decode()
         if title_candidate in ConfluencePage.name_cache.keys():
             num_occurence = int(ConfluencePage.name_cache[title_candidate]) + 1
             self.title = title_candidate + " (in multiple boards " + str(num_occurence) + ")"
