@@ -341,12 +341,22 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
             file_data = {'file': (file_name, f, content_type)}
             raw_response = session.post(url, files=file_data, headers=headers)
             if not raw_response.ok:
-                logging.error("ERROR from API upload request: " + str(raw_response.status_code))
-            response = raw_response.json()
+                if raw_response.status_code == 413:
+                    logging.error(f"ERROR: File '{file_name}' is too large to upload (413 - Request Entity Too Large)")
+                else:
+                    logging.error(f"ERROR from API upload request: {raw_response.status_code} for file '{file_name}'")
+                return None
+            try:
+                response = raw_response.json()
+            except ValueError:
+                logging.error(f"ERROR: Could not parse JSON response for file '{file_name}'")
+                return None
         except yaml.YAMLError as e:
             logging.error(e)
+            return None
         except FileNotFoundError as e:
             logging.error(e)
+            return None
 
     return response
 
@@ -482,18 +492,24 @@ def create_node(confluence_node, organization, space, user_name, user_credential
 
     # upload images
     for image in confluence_node.images:
-        upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image,
+        result = upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image,
                                               collections_dir + '/resources/')
-        logging.info('IMAGE UPLOADED ' + image)
+        if result:
+            logging.info('IMAGE UPLOADED ' + image)
+        else:
+            logging.warning('IMAGE UPLOAD FAILED ' + image)
 
     # update content with image links
     confluence_node.replace_img_with_confluence_image()
 
     # upload attachments
     for attachment in confluence_node.attachments:
-        upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, attachment,
+        result = upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, attachment,
                                               collections_dir + '/resources/')
-        logging.info('ATTACHMENT UPLOADED ' + attachment)
+        if result:
+            logging.info('ATTACHMENT UPLOADED ' + attachment)
+        else:
+            logging.warning('ATTACHMENT UPLOAD FAILED ' + attachment)
 
     # update content with attachment links
     confluence_node.replace_att_with_confluence_attachment()
