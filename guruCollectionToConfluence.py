@@ -70,11 +70,22 @@ class ConfluencePage:
     def set_content(self, content):
         soup = BeautifulSoup(content, 'html.parser')
         for img in soup.findAll('img'):
-            self.images.append(os.path.basename(img['src']))
+            src = img.get('src', '')
+            if src:
+                filename = os.path.basename(src)
+                # Skip images with very long URLs (likely external URLs with tokens)
+                if len(filename) > 255 or '?' in filename:
+                    logging.warning(f'WARNING - Skipping image with problematic filename in card "{self.title}": {filename[:100]}...')
+                    continue
+                self.images.append(filename)
         for attachment in soup.findAll('a'):
             href = get_element_attribute(attachment, 'href', '')
             if href.startswith('resources/'):
                 filename = os.path.basename(href)
+                # Skip attachments with very long filenames
+                if len(filename) > 255 or '?' in filename:
+                    logging.warning(f'WARNING - Skipping attachment with problematic filename in card "{self.title}": {filename[:100]}...')
+                    continue
                 self.attachments.append(filename)
             if 'getguru.com' in href:
                 logging.warning('WARNING - Card "{}" contains reference to getguru.com'.format(self.title))
@@ -213,6 +224,50 @@ def create_confluence_page(organization, space, parent, user_name, user_credenti
     return response
 
 
+def get_confluence_page_by_title(organization, space, user_name, user_credentials, title, parent_id=None):
+    """
+    Search for a Confluence page by title in a specific space.
+    Returns the page info if found, None otherwise.
+    """
+    url = "https://" + organization + ".atlassian.net/wiki/rest/api/content"
+    params = {
+        "spaceKey": space,
+        "title": title,
+        "expand": "version"
+    }
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    session = requests.Session()
+    session.auth = (user_name, user_credentials)
+    
+    try:
+        raw_response = session.get(url, params=params, headers=headers)
+        if raw_response.ok:
+            response = raw_response.json()
+            if response.get('size', 0) > 0:
+                results = response.get('results', [])
+                # If parent_id is specified, try to find a page with matching parent
+                if parent_id:
+                    for page in results:
+                        # Get page ancestors to check parent
+                        page_id = page['id']
+                        page_url = f"https://{organization}.atlassian.net/wiki/rest/api/content/{page_id}?expand=ancestors"
+                        page_response = session.get(page_url, headers=headers)
+                        if page_response.ok:
+                            page_data = page_response.json()
+                            ancestors = page_data.get('ancestors', [])
+                            if ancestors and ancestors[-1]['id'] == parent_id:
+                                return page
+                # If no parent specified or no match found, return first result
+                return results[0]
+            return None
+        else:
+            logging.warning(f"Could not search for page '{title}': {raw_response.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Error searching for page '{title}': {str(e)}")
+        return None
+
+
 def update_confluence_page(organization, space, page_id, user_name, user_credentials, title, content, version=2):
     url = "https://" + organization + ".atlassian.net/wiki/rest/api/content/" + page_id
     data = {
@@ -270,7 +325,12 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
     response = None
     file_path = resource_dir + "/" + file_name
 
-    if not Path(file_path).is_file():
+    try:
+        if not Path(file_path).is_file():
+            logging.warning(f"File not found: {file_name}")
+            return None
+    except OSError as e:
+        logging.error(f"OSError checking file path for {file_name[:100]}: {str(e)}")
         return None
 
     with open(file_path, "rb") as f:
@@ -281,12 +341,22 @@ def upload_attachment_for_confluence_page(organization, page_id, user_name, user
             file_data = {'file': (file_name, f, content_type)}
             raw_response = session.post(url, files=file_data, headers=headers)
             if not raw_response.ok:
-                logging.error("ERROR from API upload request: " + str(raw_response.status_code))
-            response = raw_response.json()
+                if raw_response.status_code == 413:
+                    logging.error(f"ERROR: File '{file_name}' is too large to upload (413 - Request Entity Too Large)")
+                else:
+                    logging.error(f"ERROR from API upload request: {raw_response.status_code} for file '{file_name}'")
+                return None
+            try:
+                response = raw_response.json()
+            except ValueError:
+                logging.error(f"ERROR: Could not parse JSON response for file '{file_name}'")
+                return None
         except yaml.YAMLError as e:
             logging.error(e)
+            return None
         except FileNotFoundError as e:
             logging.error(e)
+            return None
 
     return response
 
@@ -383,6 +453,23 @@ def fill_card(confluence_node, card_id, cards_path):
 
 
 def create_node(confluence_node, organization, space, user_name, user_credentials, collections_dir):
+    # First, check if a page with this title already exists
+    existing_page = get_confluence_page_by_title(organization, space, user_name, user_credentials, 
+                                                  confluence_node.title, confluence_node.parentId)
+    
+    if existing_page:
+        # Page exists, skip it
+        existing_page_id = existing_page['id']
+        logging.info(f'SKIPPING EXISTING PAGE "{confluence_node.title}" (ID: {existing_page_id})')
+        confluence_node.set_id(existing_page_id)
+        
+        # Still process children even though we skipped this page
+        if len(confluence_node.children) > 0:
+            for page in confluence_node.children:
+                create_node(page, organization, space, user_name, user_credentials, collections_dir)
+        return
+    
+    # Page doesn't exist, create it
     create_op = create_confluence_page(organization, space, confluence_node.parentId, user_name, user_credentials,
                                        confluence_node.title, confluence_node.htmlContent)
     if 'id' not in create_op:
@@ -405,18 +492,24 @@ def create_node(confluence_node, organization, space, user_name, user_credential
 
     # upload images
     for image in confluence_node.images:
-        upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image,
+        result = upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, image,
                                               collections_dir + '/resources/')
-        logging.info('IMAGE UPLOADED ' + image)
+        if result:
+            logging.info('IMAGE UPLOADED ' + image)
+        else:
+            logging.warning('IMAGE UPLOAD FAILED ' + image)
 
     # update content with image links
     confluence_node.replace_img_with_confluence_image()
 
     # upload attachments
     for attachment in confluence_node.attachments:
-        upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, attachment,
+        result = upload_attachment_for_confluence_page(organization, new_page_id, user_name, user_credentials, attachment,
                                               collections_dir + '/resources/')
-        logging.info('ATTACHMENT UPLOADED ' + attachment)
+        if result:
+            logging.info('ATTACHMENT UPLOADED ' + attachment)
+        else:
+            logging.warning('ATTACHMENT UPLOAD FAILED ' + attachment)
 
     # update content with attachment links
     confluence_node.replace_att_with_confluence_attachment()
