@@ -8,7 +8,7 @@ import mimetypes
 import datetime
 import logging
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, CData
 from pathlib import Path
 from random import seed
 from random import randint
@@ -89,6 +89,32 @@ class ConfluencePage:
                 self.attachments.append(filename)
             if 'getguru.com' in href:
                 logging.warning('WARNING - Card "{}" contains reference to getguru.com'.format(self.title))
+        # Guru exports code blocks as <pre> with one inline <code> element per
+        # line (no newlines between them). Passed through unchanged, Confluence
+        # collapses the lines and parses code as HTML. Convert each block to a
+        # Confluence "code" macro with the source in a CDATA plain-text-body.
+        for pre in soup.findAll("pre"):
+            code_lines = pre.findAll("code")
+            if code_lines:
+                code_text = "\n".join(line.get_text() for line in code_lines)
+            else:
+                code_text = pre.get_text()
+
+            code_macro = soup.new_tag("ac:structured-macro")
+            code_macro["ac:name"] = "code"
+            code_macro["ac:schema-version"] = "1"
+
+            language = get_element_attribute(pre, "data-ghq-code-block-prism", "")
+            if language:
+                lang_param = soup.new_tag("ac:parameter")
+                lang_param["ac:name"] = "language"
+                lang_param.string = language
+                code_macro.append(lang_param)
+
+            body = soup.new_tag("ac:plain-text-body")
+            body.append(CData(code_text))
+            code_macro.append(body)
+            pre.replace_with(code_macro)
         for ruler in soup.findAll('hr'):
             ruler_new = soup.new_tag('hr')
             ruler.replaceWith(ruler_new)
